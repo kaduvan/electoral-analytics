@@ -81,6 +81,7 @@
     display: inline-block; padding: 1px 6px; border-radius: 3px;
     font-weight: bold; font-size: 11px;
   }
+  .ac-label { background: none !important; border: none !important; }
 </style>
 </head>
 <body>
@@ -89,9 +90,11 @@
 <div class="topbar">
   <h1>TN Village Maps</h1>
   <select id="ac-select">
+    <option value="__overview__">Tamil Nadu Overview</option>
     <option value="nagercoil">Nagercoil (Kanniyakumari)</option>
 <option value="thiruvarur">Thiruvarur (Thiruvarur)</option>
 <option value="trichy-east">Trichy East (Tiruchirappalli)</option>
+<option value="uthangarai">Uthangarai (Krishnagiri)</option>
 
   </select>
   <div class="stats" id="ac-stats"></div>
@@ -130,7 +133,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // DATA
-const AC_LIST = [
+var AC_LIST = [
   {
     "name": "nagercoil",
     "district": "Kanniyakumari",
@@ -210,9 +213,38 @@ const AC_LIST = [
     ],
     "geojson_file": "trichy-east.geojson",
     "geojson_size_mb": 2.4
+  },
+  {
+    "name": "uthangarai",
+    "district": "Krishnagiri",
+    "center": [
+      12.27,
+      78.55
+    ],
+    "zoom": 11,
+    "has_2021": true,
+    "villages_with_data": 125,
+    "total_villages": 636,
+    "winners_2026": {
+      "INC": 27,
+      "AIADMK": 48,
+      "TVK": 50
+    },
+    "winners_2021": {
+      "INC": 24,
+      "AIADMK": 95
+    },
+    "flipped": 57,
+    "active_parties": [
+      "TVK",
+      "AIADMK",
+      "INC"
+    ],
+    "geojson_file": "uthangarai.geojson",
+    "geojson_size_mb": 4.3
   }
 ];
-const PARTY = {
+var PARTY = {
   "DMK": {
     "color": "#E02020",
     "name": "DMK Alliance"
@@ -220,6 +252,14 @@ const PARTY = {
   "BJP": {
     "color": "#FF8C00",
     "name": "BJP/ADMK Alliance"
+  },
+  "INC": {
+    "color": "#00BFFF",
+    "name": "INC (Congress)"
+  },
+  "AIADMK": {
+    "color": "#FF6600",
+    "name": "AIADMK"
   },
   "TVK": {
     "color": "#006400",
@@ -262,20 +302,22 @@ const PARTY = {
     "name": "CPI(ML)"
   }
 };
-const AC_MAP = {};
-AC_LIST.forEach(a => AC_MAP[a.name] = a);
+var AC_MAP = {};
+AC_LIST.forEach(function(a) { AC_MAP[a.name] = a; });
 
 // MAP STATE
-var tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-var tileAttrib = '&copy; OpenStreetMap';
-var map = L.map('map').setView([10.5, 78.5], 7);
+var tileUrl = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+var tileAttrib = '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://osm.org/">OSM</a>';
+var map = L.map('map').setView([10.8, 78.5], 7);
 L.tileLayer(tileUrl, {attribution: tileAttrib, maxZoom: 18}).addTo(map);
 
 var geojsonLayer = null;
+var overviewLayers = [];
 var currentAC = null;
 var currentLayer = 'margin';
 var highlightedParty = null;
 var geojsonData = null;
+var loadedGeoJSON = {};  // cache loaded GeoJSONs
 
 // COLOR HELPERS
 function hexToRgb(hex) {
@@ -343,12 +385,81 @@ function getStyle(feature) {
   };
 }
 
+// LOAD OVERVIEW — show all ACs highlighted on TN map
+function loadOverview() {
+  currentAC = null;
+  highlightedParty = null;
+
+  // Clear AC layer
+  if (geojsonLayer) { map.removeLayer(geojsonLayer); geojsonLayer = null; }
+
+  // Clear old overview layers
+  overviewLayers.forEach(function(l) { map.removeLayer(l); });
+  overviewLayers = [];
+
+  map.setView([10.8, 78.5], 7);
+
+  // Update stats
+  document.getElementById('ac-stats').innerHTML = '<span>Select a constituency to zoom in</span>';
+
+  // Load all AC GeoJSONs as lightweight outlines
+  AC_LIST.forEach(function(ac) {
+    fetch('data/' + ac.geojson_file)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        // Filter to only villages with data to get AC boundary
+        var withData = data.features.filter(function(f) { return f.properties.votes_2026; });
+        if (withData.length === 0) return;
+
+        var layer = L.geoJSON(data, {
+          filter: function(f) { return !!f.properties.votes_2026; },
+          style: function() {
+            return { fillColor: '#4488cc', color: '#2266aa', weight: 1, opacity: 0.6, fillOpacity: 0.25 };
+          },
+          onEachFeature: function(feature, lyr) {
+            lyr.on({
+              mouseover: function(e) { e.target.setStyle({weight: 2, fillOpacity: 0.4}); },
+              mouseout: function(e) { lyr.setStyle({weight: 1, fillOpacity: 0.25}); },
+              click: function() {
+                document.getElementById('ac-select').value = ac.name;
+                loadAC(ac.name);
+              }
+            });
+          }
+        });
+        layer.addTo(map);
+        overviewLayers.push(layer);
+
+        // Add label for AC center
+        var marker = L.marker(ac.center, {
+          icon: L.divIcon({
+            className: 'ac-label',
+            html: '<div style="background:rgba(255,255,255,0.9);padding:2px 6px;border-radius:3px;font-size:11px;font-weight:600;white-space:nowrap;border:1px solid #aaa">' + ac.name.replace(/-/g,' ').replace(/\b\w/g, function(c){return c.toUpperCase()}) + '</div>',
+            iconSize: null
+          })
+        }).addTo(map);
+        overviewLayers.push(marker);
+      });
+  });
+
+  // Legend for overview
+  var legend = document.getElementById('legend');
+  legend.innerHTML = '<h4>Overview</h4><div style="font-size:11px;color:#666">Click a constituency to explore</div>';
+
+  // Info panel
+  document.getElementById('info').innerHTML = '<h3>Tamil Nadu Electoral Map</h3><p style="margin:0;color:#666">Select a constituency from the dropdown or click on the map to explore village-level results.</p><div style="margin-top:8px;font-size:12px;color:#888">' + AC_LIST.length + ' constituencies available</div>';
+}
+
 // LOAD AC
 function loadAC(acName) {
   var ac = AC_MAP[acName];
   if (!ac) return;
   currentAC = ac;
   highlightedParty = null;
+
+  // Clear overview layers
+  overviewLayers.forEach(function(l) { map.removeLayer(l); });
+  overviewLayers = [];
 
   // Update stats bar
   var statsEl = document.getElementById('ac-stats');
@@ -488,9 +599,13 @@ function updateLegend() {
   } else if (currentLayer === 'swing') {
     html += '<div style="font-size:11px;color:#666;margin-bottom:4px">Flipped villages highlighted</div>';
     html += '<div class="legend-item"><div class="legend-swatch" style="background:#DDDDDD"></div>Held same</div>';
-    html += '<div class="legend-item"><div class="legend-swatch" style="background:#E02020"></div>To DMK</div>';
-    html += '<div class="legend-item"><div class="legend-swatch" style="background:#FF8C00"></div>To BJP/ADMK</div>';
-    html += '<div class="legend-item"><div class="legend-swatch" style="background:#006400"></div>To TVK</div>';
+    var swingParties = Object.keys(currentAC.winners_2026);
+    for (var si=0; si<swingParties.length; si++) {
+      var sp = swingParties[si];
+      var sc = PARTY[sp] ? PARTY[sp].color : '#808080';
+      var sn = PARTY[sp] ? PARTY[sp].name : sp;
+      html += '<div class="legend-item"><div class="legend-swatch" style="background:' + sc + '"></div>Flipped to ' + sn + '</div>';
+    }
   } else {
     html += '<div style="font-size:11px;color:#666">No shading</div>';
   }
@@ -530,7 +645,11 @@ function updateFilterCheckbox() {
 
 // EVENT HANDLERS
 document.getElementById('ac-select').addEventListener('change', function(e) {
-  loadAC(e.target.value);
+  if (e.target.value === '__overview__') {
+    loadOverview();
+  } else {
+    loadAC(e.target.value);
+  }
 });
 
 document.querySelectorAll('input[name="layer"]').forEach(function(radio) {
@@ -548,11 +667,8 @@ document.getElementById('filter-all').addEventListener('change', function(e) {
   updateLegend();
 });
 
-// Load first AC on page load
-if (AC_LIST.length > 0) {
-  loadAC(AC_LIST[0].name);
-  document.getElementById('ac-select').value = AC_LIST[0].name;
-}
+// Load overview on page load
+loadOverview();
 </script>
 </body>
 </html>
